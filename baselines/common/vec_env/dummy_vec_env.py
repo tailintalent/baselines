@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 from .vec_env import VecEnv
 from .util import copy_obs_dict, dict_to_obs, obs_space_info
 
@@ -9,19 +10,24 @@ class DummyVecEnv(VecEnv):
     Useful when debugging and when num_env == 1 (in the latter case,
     avoids communication overhead)
     """
-    def __init__(self, env_fns):
+    def __init__(self, env_fns, obs_graph=False, is_torch=False):
         """
         Arguments:
 
         env_fns: iterable of callables      functions that build environments
         """
         self.envs = [fn() for fn in env_fns]
+        self.obs_graph = obs_graph
+        self.is_torch = is_torch
         env = self.envs[0]
         VecEnv.__init__(self, len(env_fns), env.observation_space, env.action_space)
         obs_space = env.observation_space
-        self.keys, shapes, dtypes = obs_space_info(obs_space)
-
-        self.buf_obs = { k: np.zeros((self.num_envs,) + tuple(shapes[k]), dtype=dtypes[k]) for k in self.keys }
+        if self.obs_graph:
+            self.keys = [None]
+            self.buf_obs = {None: [None for _ in self.envs]}
+        else:
+            self.keys, shapes, dtypes = obs_space_info(obs_space)
+            self.buf_obs = {k: np.zeros((self.num_envs,) + tuple(shapes[k]), dtype=dtypes[k]) for k in self.keys}
         self.buf_dones = np.zeros((self.num_envs,), dtype=np.bool)
         self.buf_rews  = np.zeros((self.num_envs,), dtype=np.float32)
         self.buf_infos = [{} for _ in range(self.num_envs)]
@@ -52,7 +58,11 @@ class DummyVecEnv(VecEnv):
             if self.buf_dones[e]:
                 obs = self.envs[e].reset()
             self._save_obs(e, obs)
-        return (self._obs_from_buf(), np.copy(self.buf_rews), np.copy(self.buf_dones),
+        if self.is_torch:
+            rews = torch.from_numpy(self.buf_rews)[:, None].float()
+        else:
+            rews = np.copy(self.buf_rews)
+        return (self._obs_from_buf(), rews, np.copy(self.buf_dones),
                 self.buf_infos.copy())
 
     def reset(self):
@@ -69,7 +79,10 @@ class DummyVecEnv(VecEnv):
                 self.buf_obs[k][e] = obs[k]
 
     def _obs_from_buf(self):
-        return dict_to_obs(copy_obs_dict(self.buf_obs))
+        if self.obs_graph:
+            return self.buf_obs[None]
+        else:
+            return dict_to_obs(copy_obs_dict(self.buf_obs))
 
     def get_images(self):
         return [env.render(mode='rgb_array') for env in self.envs]
